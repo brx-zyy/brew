@@ -53,6 +53,8 @@ module Homebrew
             hash["disable_args"] = disable_args
           end
 
+          hash["incompatible"] = hash["supported_platforms"]&.map(&:to_sym)&.exclude?(bottle_tag.to_sym)
+
           hash["names"] = hash["name"]
 
           if (artifacts = hash["artifacts"])
