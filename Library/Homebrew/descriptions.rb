@@ -112,10 +112,12 @@ class Descriptions
     end
 
     status_data = @status_data[full_name]
-    if status_data&.[](:deprecated)
-      Homebrew::Search.pretty_deprecated(printed_name)
-    elsif status_data&.[](:disabled)
+    if status_data&.[](:disabled)
       Homebrew::Search.pretty_disabled(printed_name)
+    elsif status_data&.[](:incompatible)
+      Homebrew::Search.pretty_incompatible(printed_name)
+    elsif status_data&.[](:deprecated)
+      Homebrew::Search.pretty_deprecated(printed_name)
     else
       formula_or_cask = begin
         description.is_a?(Array) ? Cask::CaskLoader.load(full_name) : Formulary.factory(full_name)
