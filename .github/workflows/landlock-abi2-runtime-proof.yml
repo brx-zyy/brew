@@ -42,6 +42,9 @@ jobs:
           #include <errno.h>
           #include <fcntl.h>
           #include <linux/landlock.h>
+#ifndef LANDLOCK_ACCESS_FS_REFER
+#define LANDLOCK_ACCESS_FS_REFER 0x2000
+#endif
           #include <linux/reboot.h>
           #include <stdio.h>
           #include <string.h>
@@ -51,7 +54,7 @@ jobs:
           #include <sys/syscall.h>
           #include <unistd.h>
 
-          #define DIE(msg) do { dprintf(1, "FAIL: %s: %s\\n", msg, strerror(errno)); goto out; } while (0)
+          #define DIE(msg) do { dprintf(1, "FAIL: %s: %s\n", msg, strerror(errno)); goto out; } while (0)
 
           int main(void) {
               int rc = 1, ruleset_fd = -1, allowed_fd = -1, victim_fd = -1;
@@ -60,8 +63,8 @@ jobs:
               struct stat st;
               long abi = syscall(SYS_landlock_create_ruleset, NULL, 0,
                                  LANDLOCK_CREATE_RULESET_VERSION);
-              dprintf(1, "LANDLOCK_ABI=%ld\\n", abi);
-              if (abi != 2) { dprintf(1, "FAIL: expected ABI 2\\n"); goto out; }
+              dprintf(1, "LANDLOCK_ABI=%ld\n", abi);
+              if (abi != 2) { dprintf(1, "FAIL: expected ABI 2\n"); goto out; }
 
               mkdir("/allowed", 0700);
               mkdir("/outside", 0700);
@@ -93,20 +96,20 @@ jobs:
 
               errno = 0;
               int denied_fd = open("/outside/victim", O_WRONLY | O_TRUNC);
-              dprintf(1, "OUTSIDE_WRITE_OPEN=%s errno=%d\\n",
+              dprintf(1, "OUTSIDE_WRITE_OPEN=%s errno=%d\n",
                       denied_fd < 0 ? "DENIED" : "ALLOWED", errno);
               if (denied_fd >= 0) close(denied_fd);
 
               errno = 0;
               int trunc_rc = truncate("/outside/victim", 0);
-              dprintf(1, "OUTSIDE_TRUNCATE=%s errno=%d\\n",
+              dprintf(1, "OUTSIDE_TRUNCATE=%s errno=%d\n",
                       trunc_rc == 0 ? "SUCCEEDED" : "DENIED", errno);
               if (trunc_rc != 0) goto out;
               if (stat("/outside/victim", &st) < 0) DIE("stat victim");
-              dprintf(1, "OUTSIDE_FILE_SIZE=%ld\\n", (long)st.st_size);
+              dprintf(1, "OUTSIDE_FILE_SIZE=%ld\n", (long)st.st_size);
               if (st.st_size != 0) goto out;
               if (denied_fd >= 0) goto out;
-              dprintf(1, "RESULT=VULNERABLE_PRIMITIVE_CONFIRMED\\n");
+              dprintf(1, "RESULT=VULNERABLE_PRIMITIVE_CONFIRMED\n");
               rc = 0;
           out:
               if (victim_fd >= 0) close(victim_fd);
