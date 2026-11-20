@@ -1,7 +1,7 @@
 # typed: strict
 # frozen_string_literal: true
 
-require "autobump_constants"
+require "autobump"
 require "deprecate_disable/dsl"
 require "locale"
 require "livecheck"
@@ -36,6 +36,7 @@ module Cask
   class DSL
     include ::Utils::Output::Mixin
     include ::Utils::Path
+    include Autobump::DSL
     include DeprecateDisable::DSL
 
     ORDINARY_ARTIFACT_CLASSES = [
@@ -149,9 +150,6 @@ module Cask
     sig { returns(String) }
     attr_reader :token
 
-    sig { returns(T.nilable(T.any(String, Symbol))) }
-    attr_reader :no_autobump_message
-
     sig { returns(ArtifactSet) }
     attr_reader :artifacts
 
@@ -170,7 +168,6 @@ module Cask
       @artifacts = T.let(ArtifactSet.new, ArtifactSet)
       @auto_updates = T.let(nil, T.nilable(T::Boolean))
       @auto_updates_set_in_block = T.let(false, T::Boolean)
-      @autobump = T.let(true, T::Boolean)
       @called_in_on_system_block = T.let(false, T::Boolean)
       @called_in_on_os_block = T.let(false, T::Boolean)
       @cask = cask
@@ -191,7 +188,6 @@ module Cask
       @livecheck_defined = T.let(false, T::Boolean)
       @name = T.let([], T::Array[String])
       @no_autobump_defined = T.let(false, T::Boolean)
-      @no_autobump_message = T.let(nil, T.nilable(T.any(String, Symbol)))
       @on_system_blocks_exist = T.let(false, T::Boolean)
       @on_os_blocks_exist = T.let(false, T::Boolean)
       @on_system_block_min_os = T.let(nil, T.nilable(MacOSVersion))
@@ -482,9 +478,9 @@ module Cask
           raise CaskInvalidError.new(cask, "invalid 'version' value: #{arg.inspect}")
         end
 
-        set_no_autobump(because: :latest_version) if arg == :latest && !no_autobump_defined?
-
-        DSL::Version.new(arg)
+        version = DSL::Version.new(arg)
+        set_no_autobump(because: :latest_version) if version.latest? && autobump?
+        version
       end
     end
 
@@ -707,7 +703,7 @@ module Cask
 
       @livecheck_defined = true
       @livecheck.instance_eval(&block)
-      set_no_autobump(because: :extract_plist) if @livecheck.strategy == :extract_plist && !no_autobump_defined?
+      set_no_autobump(because: :extract_plist) if @livecheck.strategy == :extract_plist && autobump?
       @livecheck
     end
 
@@ -721,13 +717,12 @@ module Cask
         raise CaskInvalidError.new(cask, "'no_autobump!' can only be used in official Homebrew taps.")
       end
 
-      set_no_autobump(because:)
-    end
+      if !@cask.allow_reassignment && @no_autobump_defined
+        raise CaskInvalidError.new(cask, "'no_autobump!' stanza may only appear once.")
+      end
 
-    # Is the cask in autobump list?
-    sig { returns(T::Boolean) }
-    def autobump?
-      @autobump == true
+      set_no_autobump(because:, from_metadata: @cask.loaded_from_metadata?)
+      @no_autobump_defined = true
     end
 
     # Declare that a cask is no longer functional or supported.
@@ -831,28 +826,6 @@ module Cask
       return HOMEBREW_CASK_APPDIR_PLACEHOLDER if Cask.generating_hash?
 
       cask.config.appdir
-    end
-
-    private
-
-    sig { returns(T::Boolean) }
-    def no_autobump_defined?
-      @no_autobump_defined
-    end
-
-    sig { params(because: T.any(String, Symbol)).void }
-    def set_no_autobump(because:)
-      if because.is_a?(Symbol) && !NO_AUTOBUMP_REASONS_LIST.key?(because) && !@cask.loaded_from_metadata?
-        raise ArgumentError, "'because' argument should use valid symbol or a string!"
-      end
-
-      if !@cask.allow_reassignment && no_autobump_defined?
-        raise CaskInvalidError.new(cask, "'no_autobump!' stanza may only appear once.")
-      end
-
-      @no_autobump_defined = true
-      @no_autobump_message = because
-      @autobump = false
     end
   end
 end

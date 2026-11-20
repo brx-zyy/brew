@@ -5,7 +5,7 @@ require "utils/brew_command"
 
 require "utils/text"
 
-require "autobump_constants"
+require "autobump"
 require "deprecate_disable/dsl"
 require "cache_store"
 require "did_you_mean"
@@ -311,9 +311,6 @@ class Formula # rubocop:disable Metrics/ClassLength
     version_scheme = self.class.version_scheme || 0
     @version_scheme = T.let(version_scheme, Integer)
     @compatibility_version = T.let(self.class.compatibility_version, T.nilable(Integer))
-
-    @autobump = T.let(true, T::Boolean)
-    @no_autobump_message = T.let(nil, T.nilable(T.any(String, Symbol)))
 
     @force_bottle = force_bottle
 
@@ -4130,6 +4127,7 @@ class Formula # rubocop:disable Metrics/ClassLength
 
   # The methods below define the formula DSL.
   class << self
+    include Autobump::DSL
     include BuildEnvironment::DSL
     include DeprecateDisable::DSL
     include OnSystem::MacOSAndLinux
@@ -5207,27 +5205,8 @@ class Formula # rubocop:disable Metrics/ClassLength
         raise ArgumentError, "no_autobump! can only be used in official Homebrew taps." if tap && !tap.official?
       end
 
-      if because.is_a?(Symbol) && !NO_AUTOBUMP_REASONS_LIST.key?(because) && !loaded_from_metadata?
-        raise ArgumentError, "'because' argument should use valid symbol or a string!"
-      end
-
-      @no_autobump_defined = T.let(true, T.nilable(T::Boolean))
-      @no_autobump_message = T.let(because, T.nilable(T.any(String, Symbol)))
-      @autobump = T.let(false, T.nilable(T::Boolean))
+      set_no_autobump(because:, from_metadata: loaded_from_metadata?)
     end
-
-    # Is the formula in the autobump list?
-    sig { returns(T::Boolean) }
-    def autobump?
-      @autobump != false # @autobump may be `nil`
-    end
-
-    # Message that explains why the formula was excluded from the autobump list.
-    # Returns `nil` if no message is specified.
-    #
-    # @see .no_autobump!
-    sig { returns(T.nilable(T.any(String, Symbol))) }
-    attr_reader :no_autobump_message
 
     # Service can be used to define services.
     # This method evaluates the DSL specified in the service block of the

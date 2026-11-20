@@ -181,6 +181,37 @@ RSpec.describe Cask::CaskLoader::FromAPILoader, :cask do
   end
 
   describe "#load" do
+    shared_examples "an autobump exclusion" do |reason|
+      it "preserves the reason through both API formats" do
+        cask = Cask::Cask.new("test-cask") do
+          version "1.0"
+          url "https://brew.sh/test-cask.zip"
+          no_autobump! because: reason
+        end
+        json = JSON.parse(JSON.generate(cask.to_h))
+        struct = Homebrew::API::Cask::CaskStructGenerator.generate_cask_struct_hash(json)
+        loaders = [
+          described_class.new(cask.token, from_json: json),
+          described_class.new(cask.token, from_json: struct.serialize, from_internal_json: true),
+        ]
+
+        expect(loaders.map { |loader| loader.load(config: nil) })
+          .to all(have_attributes(autobump?: false, no_autobump_message: reason))
+      end
+    end
+
+    it_behaves_like "an autobump exclusion", :bumped_by_upstream
+    it_behaves_like "an autobump exclusion", "maintained by the vendor"
+
+    it "infers the autobump exclusion from older API data with a latest version" do
+      cask = described_class.new("test-cask", from_json: {
+        "version" => "latest",
+        "url"     => "https://brew.sh/test-cask.zip",
+      }).load(config: nil)
+
+      expect(cask).to have_attributes(autobump?: false, no_autobump_message: :latest_version)
+    end
+
     it "loads existing JSON metadata that still has a verified URL spec" do
       cask = described_class.new(
         "legacy-verified",

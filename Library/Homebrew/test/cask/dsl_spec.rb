@@ -239,6 +239,43 @@ RSpec.describe Cask::DSL, :cask, :no_api do
       expect(cask.autobump?).to be(true)
     end
 
+    it "uses the explicit reason when version :latest appears first" do
+      cask = Cask::Cask.new("test-cask") do
+        version :latest
+        no_autobump! because: :bumped_by_upstream
+      end
+
+      expect(cask).to have_attributes(autobump?: false, no_autobump_message: :bumped_by_upstream)
+    end
+
+    it "uses the explicit reason when the extract_plist strategy appears first" do
+      cask = Cask::Cask.new("test-cask") do
+        livecheck { strategy :extract_plist }
+        no_autobump! because: :bumped_by_upstream
+      end
+
+      expect(cask.no_autobump_message).to eq(:bumped_by_upstream)
+    end
+
+    it "preserves an explicit reason when automatic exclusions appear later" do
+      cask = Cask::Cask.new("test-cask") do
+        no_autobump! because: :bumped_by_upstream
+        version :latest
+        livecheck { strategy :extract_plist }
+      end
+
+      expect(cask.no_autobump_message).to eq(:bumped_by_upstream)
+    end
+
+    it "rejects duplicate explicit reasons" do
+      expect do
+        Cask::Cask.new("test-cask") do
+          no_autobump! because: :bumped_by_upstream
+          no_autobump! because: :incompatible_version_format
+        end
+      end.to raise_error(Cask::CaskInvalidError, /'no_autobump!' stanza may only appear once/)
+    end
+
     it "rejects the disabled reason in a current cask" do
       expect do
         Cask::Cask.new("test-cask") do
